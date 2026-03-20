@@ -2,9 +2,17 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
-from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
+from datetime import datetime, timedelta
+from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders, restocking_orders
 
 app = FastAPI(title="Factory Inventory Management System")
+
+# Lead time in days by category
+LEAD_TIME_DAYS = {
+    'Sensors': 7, 'Circuit Boards': 14, 'Controllers': 14,
+    'Actuators': 21, 'Power Supplies': 21,
+}
+DEFAULT_LEAD_TIME = 14
 
 # Quarter mapping for date filtering
 QUARTER_MAP = {
@@ -119,6 +127,30 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockingOrderItem(BaseModel):
+    sku: str
+    name: str
+    category: str
+    quantity: int
+    unit_cost: float
+    total_cost: float
+
+class RestockingOrder(BaseModel):
+    id: str
+    order_number: str
+    items: List[RestockingOrderItem]
+    total_cost: float
+    budget: float
+    status: str
+    submitted_date: str
+    expected_delivery: str
+    warehouse: Optional[str] = None
+
+class CreateRestockingOrderRequest(BaseModel):
+    items: List[dict]
+    budget: float
+    warehouse: Optional[str] = None
 
 # API endpoints
 @app.get("/")
@@ -303,6 +335,36 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.get("/api/restocking/orders", response_model=List[RestockingOrder])
+def get_restocking_orders():
+    return restocking_orders
+
+@app.post("/api/restocking/orders", response_model=RestockingOrder, status_code=201)
+def create_restocking_order(request: CreateRestockingOrderRequest):
+    id_str = str(len(restocking_orders) + 1)
+    order_items = [RestockingOrderItem(
+        sku=i['sku'], name=i['name'], category=i['category'],
+        quantity=i['quantity'], unit_cost=i['unit_cost'],
+        total_cost=i['quantity'] * i['unit_cost']
+    ) for i in request.items]
+    max_lead = max(
+        (LEAD_TIME_DAYS.get(i['category'], DEFAULT_LEAD_TIME) for i in request.items),
+        default=DEFAULT_LEAD_TIME
+    )
+    order = RestockingOrder(
+        id=id_str,
+        order_number=f"RST-{datetime.now().strftime('%Y%m%d')}-{id_str.zfill(3)}",
+        items=order_items,
+        total_cost=sum(i.total_cost for i in order_items),
+        budget=request.budget,
+        status="Submitted",
+        submitted_date=datetime.now().isoformat(),
+        expected_delivery=(datetime.now() + timedelta(days=max_lead)).isoformat(),
+        warehouse=request.warehouse
+    )
+    restocking_orders.append(order)
+    return order
 
 if __name__ == "__main__":
     import uvicorn
